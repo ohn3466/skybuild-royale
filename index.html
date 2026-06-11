@@ -284,6 +284,41 @@
       padding: 12px 16px;
     }
 
+    .multi {
+      display: grid;
+      gap: 8px;
+      margin-top: 14px;
+      padding-top: 14px;
+      border-top: 1px solid var(--line);
+    }
+
+    .multi-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    .multi input {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.08);
+      color: var(--text);
+      font: inherit;
+      padding: 11px 12px;
+      text-transform: uppercase;
+    }
+
+    .multi button {
+      padding: 10px 12px;
+    }
+
+    .multi-status {
+      min-height: 18px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
     .lock-note {
       position: absolute;
       left: 50%;
@@ -374,6 +409,15 @@
       <h2>3D-Drop bereit</h2>
       <p>Spring auf die Insel, sammle Ressourcen, baue Deckung und bleib als letzter übrig.</p>
       <button id="startButton">Match starten</button>
+      <div class="multi">
+        <div class="multi-row">
+          <button id="hostButton" type="button">Online hosten</button>
+          <button id="joinButton" type="button">Raum joinen</button>
+        </div>
+        <input id="roomInput" maxlength="12" placeholder="RAUMCODE">
+        <button id="copyRoomButton" type="button">Einladungslink kopieren</button>
+        <div id="multiStatus" class="multi-status">Online: Raum hosten oder Code von einem Freund eingeben.</div>
+      </div>
     </section>
   </div>
 
@@ -394,6 +438,11 @@
       health: document.querySelector("#healthFill"),
       start: document.querySelector("#startCard"),
       startButton: document.querySelector("#startButton"),
+      hostButton: document.querySelector("#hostButton"),
+      joinButton: document.querySelector("#joinButton"),
+      copyRoomButton: document.querySelector("#copyRoomButton"),
+      roomInput: document.querySelector("#roomInput"),
+      multiStatus: document.querySelector("#multiStatus"),
       lockNote: document.querySelector("#lockNote"),
       slots: [...document.querySelectorAll(".slot")]
     };
@@ -465,6 +514,24 @@
     const loot = [];
     const particles = [];
     const colliders = [];
+    const remotePlayers = new Map();
+    const netConnections = new Map();
+    const net = {
+      Peer: null,
+      peer: null,
+      room: "",
+      isHost: false,
+      ready: false,
+      lastSend: 0
+    };
+
+    import("https://esm.sh/peerjs@1.5.4?bundle")
+      .then((module) => {
+        net.Peer = module.default || module.Peer || module;
+        setMultiplayerStatus("Online bereit: Raum hosten oder Code eingeben.");
+        autoJoinFromHash();
+      })
+      .catch(() => setMultiplayerStatus("Online-Modul konnte nicht geladen werden. Singleplayer läuft weiter."));
 
     function makeTexture(base, fleck, size = 256, density = 850) {
       const canvas = document.createElement("canvas");
@@ -793,6 +860,177 @@
       return group;
     }
 
+    function setMultiplayerStatus(text) {
+      if (ui.multiStatus) ui.multiStatus.textContent = text;
+    }
+
+    function makeRoomCode() {
+      return Math.random().toString(36).slice(2, 8).toUpperCase();
+    }
+
+    function roomPeerId(room) {
+      return `skybuild-royale-${room.toLowerCase()}`;
+    }
+
+    function ensurePeer(id = null) {
+      if (!net.Peer) {
+        setMultiplayerStatus("Online-Modul lädt noch. Gleich nochmal klicken.");
+        return null;
+      }
+      if (net.peer && !net.peer.destroyed) return net.peer;
+      net.peer = id ? new net.Peer(id) : new net.Peer();
+      net.peer.on("open", () => {
+        net.ready = true;
+        setMultiplayerStatus(net.isHost ? `Raum ${net.room} offen. Link kopieren und schicken.` : `Online verbunden als ${net.peer.id}.`);
+      });
+      net.peer.on("connection", (connection) => addNetworkConnection(connection));
+      net.peer.on("error", (error) => setMultiplayerStatus(`Online-Fehler: ${error.type || error.message}`));
+      return net.peer;
+    }
+
+    function hostRoom() {
+      const room = (ui.roomInput.value.trim() || makeRoomCode()).toUpperCase();
+      ui.roomInput.value = room;
+      net.room = room;
+      net.isHost = true;
+      net.ready = false;
+      ensurePeer(roomPeerId(room));
+      location.hash = `room=${room}`;
+      setMultiplayerStatus(`Raum ${room} wird geöffnet...`);
+      if (!state.running) resetMatch();
+    }
+
+    function joinRoom() {
+      const room = (ui.roomInput.value.trim() || new URLSearchParams(location.hash.slice(1)).get("room") || "").toUpperCase();
+      if (!room) {
+        setMultiplayerStatus("Bitte Raumcode eingeben.");
+        return;
+      }
+      ui.roomInput.value = room;
+      net.room = room;
+      net.isHost = false;
+      const peer = ensurePeer();
+      if (!peer) return;
+      const connectWhenReady = () => {
+        const connection = peer.connect(roomPeerId(room), { reliable: false });
+        addNetworkConnection(connection);
+        setMultiplayerStatus(`Verbinde mit Raum ${room}...`);
+        if (!state.running) resetMatch();
+      };
+      if (peer.open) connectWhenReady();
+      else peer.once("open", connectWhenReady);
+      location.hash = `room=${room}`;
+    }
+
+    function autoJoinFromHash() {
+      const room = new URLSearchParams(location.hash.slice(1)).get("room");
+      if (room && ui.roomInput) {
+        ui.roomInput.value = room.toUpperCase();
+        setMultiplayerStatus(`Raum ${room.toUpperCase()} im Link gefunden. Auf "Raum joinen" klicken.`);
+      }
+    }
+
+    function addNetworkConnection(connection) {
+      if (!connection || netConnections.has(connection.peer)) return;
+      netConnections.set(connection.peer, connection);
+      connection.on("open", () => {
+        setMultiplayerStatus(`${netConnections.size} Verbindung(en) im Raum ${net.room}.`);
+        sendNetworkState(true);
+      });
+      connection.on("data", (data) => handleNetworkData(connection, data));
+      connection.on("close", () => removeRemotePlayer(connection.peer));
+      connection.on("error", () => removeRemotePlayer(connection.peer));
+    }
+
+    function removeRemotePlayer(peerId) {
+      netConnections.delete(peerId);
+      const remote = remotePlayers.get(peerId);
+      if (remote) {
+        scene.remove(remote.mesh);
+        remotePlayers.delete(peerId);
+      }
+      setMultiplayerStatus(`${netConnections.size} Verbindung(en) im Raum ${net.room || "-"}.`);
+    }
+
+    function getRemotePlayer(peerId, label = "Player") {
+      let remote = remotePlayers.get(peerId);
+      if (remote) return remote;
+      const mat = new THREE.MeshStandardMaterial({ color: 0xffd66e, roughness: 0.52 });
+      const mesh = makeCharacter(mat);
+      mesh.position.set(0, groundHeight(0, 0), 0);
+      scene.add(mesh);
+      remote = { mesh, label, health: 150, shield: 100, weapon: 0, lastSeen: clock.elapsedTime };
+      remotePlayers.set(peerId, remote);
+      return remote;
+    }
+
+    function broadcastNetwork(data, exceptPeer = null) {
+      for (const [peerId, connection] of netConnections) {
+        if (peerId === exceptPeer || !connection.open) continue;
+        connection.send(data);
+      }
+    }
+
+    function sendNetworkState(force = false) {
+      if (!net.peer || !net.peer.open || netConnections.size === 0) return;
+      const now = clock.elapsedTime;
+      if (!force && now - net.lastSend < 0.08) return;
+      net.lastSend = now;
+      broadcastNetwork({
+        type: "state",
+        id: net.peer.id,
+        x: player.pos.x,
+        y: player.pos.y,
+        z: player.pos.z,
+        yaw: state.yaw,
+        health: player.health,
+        shield: player.shield,
+        weapon: player.weapon
+      });
+    }
+
+    function sendNetworkShot(origin, dir, weaponIndex) {
+      if (!net.peer || !net.peer.open || netConnections.size === 0) return;
+      broadcastNetwork({
+        type: "shot",
+        id: net.peer.id,
+        x: origin.x,
+        y: origin.y,
+        z: origin.z,
+        dx: dir.x,
+        dy: dir.y,
+        dz: dir.z,
+        weapon: weaponIndex
+      });
+    }
+
+    function handleNetworkData(connection, data) {
+      if (!data || !data.type) return;
+      if (data.id && data.id === net.peer?.id) return;
+      if (data.type === "state") {
+        const remote = getRemotePlayer(data.id || connection.peer);
+        remote.mesh.position.set(data.x, data.y, data.z);
+        remote.mesh.rotation.y = -data.yaw;
+        remote.health = data.health;
+        remote.shield = data.shield;
+        remote.weapon = data.weapon || 0;
+        remote.lastSeen = clock.elapsedTime;
+        if (net.isHost) broadcastNetwork(data, connection.peer);
+      }
+      if (data.type === "shot") {
+        const origin = new THREE.Vector3(data.x, data.y, data.z);
+        const dir = new THREE.Vector3(data.dx, data.dy, data.dz).normalize();
+        shoot(data.id || connection.peer, origin, dir, data.weapon || 0);
+        if (net.isHost) broadcastNetwork(data, connection.peer);
+      }
+    }
+
+    function updateRemotePlayers() {
+      for (const [peerId, remote] of remotePlayers) {
+        if (clock.elapsedTime - remote.lastSeen > 12) removeRemotePlayer(peerId);
+      }
+    }
+
     function spawnLoot(x = rng(-210, 210), z = rng(-210, 210), type = null) {
       const roll = Math.random();
       const chosen = type || (roll < 0.32 ? "wood" : roll < 0.55 ? "shield" : roll < 0.76 ? "health" : "weapon");
@@ -996,6 +1234,7 @@
           color: weapon.color
         });
       }
+      if (owner === "player") sendNetworkShot(origin, dir, weaponIndex);
     }
 
     function build(type) {
@@ -1077,6 +1316,13 @@
         const d = horizontalDistance(bot.mesh.position, other.mesh.position);
         if (d < bestDist && d < 135) {
           best = other;
+          bestDist = d;
+        }
+      }
+      for (const remote of remotePlayers.values()) {
+        const d = horizontalDistance(bot.mesh.position, remote.mesh.position);
+        if (d < bestDist && d < 135) {
+          best = remote;
           bestDist = d;
         }
       }
@@ -1280,7 +1526,7 @@
     }
 
     function updateUi() {
-      ui.alive.textContent = bots.filter((bot) => bot.alive).length + 1;
+      ui.alive.textContent = bots.filter((bot) => bot.alive).length + 1 + remotePlayers.size;
       ui.kills.textContent = state.kills;
       ui.mat.textContent = player.material;
       ui.zone.textContent = `${Math.round((state.zoneRadius / 235) * 100)}%`;
@@ -1322,6 +1568,8 @@
       updateParticles(dt);
       updateZone(dt);
       updateStormVisual();
+      sendNetworkState();
+      updateRemotePlayers();
       drawMinimap();
       updateUi();
       if (player.health <= 0) endMatch(false);
@@ -1419,6 +1667,22 @@
       mouse.lastY = innerHeight / 2;
       renderer.domElement.focus();
       requestLock();
+    });
+    ui.hostButton.addEventListener("click", hostRoom);
+    ui.joinButton.addEventListener("click", joinRoom);
+    ui.copyRoomButton.addEventListener("click", async () => {
+      const room = (ui.roomInput.value.trim() || net.room || "").toUpperCase();
+      if (!room) {
+        setMultiplayerStatus("Erst Raum hosten oder Code eingeben.");
+        return;
+      }
+      const link = `${location.origin}${location.pathname}#room=${room}`;
+      try {
+        await navigator.clipboard.writeText(link);
+        setMultiplayerStatus(`Link kopiert: ${link}`);
+      } catch {
+        setMultiplayerStatus(`Link: ${link}`);
+      }
     });
   </script>
 </body>
