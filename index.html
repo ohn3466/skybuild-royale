@@ -555,7 +555,7 @@
       if (window.Peer) {
         net.Peer = window.Peer;
       }
-      import("https://esm.sh/trystero@0.21.0/torrent?bundle")
+      import("https://esm.sh/trystero@0.21.0?bundle")
         .then((module) => {
           net.TrysteroJoin = module.joinRoom;
           setMultiplayerStatus("Online bereit: Raum hosten oder Code eingeben.");
@@ -984,7 +984,7 @@
       net.ready = false;
       location.hash = `room=${room}`;
       connectSharedRoom(room);
-      ensurePeer(roomPeerId(room));
+      if (net.Peer) ensurePeer(roomPeerId(room));
       setMultiplayerStatus(`Raum ${room} wird geöffnet...`);
     }
 
@@ -998,16 +998,20 @@
       net.room = room;
       net.isHost = false;
       connectSharedRoom(room);
+      location.hash = `room=${room}`;
+      if (!net.Peer) {
+        setMultiplayerStatus(`Raum ${room} verbunden. Warte auf Host-Start.`);
+        return;
+      }
       const peer = ensurePeer();
       if (!peer) return;
       const connectWhenReady = () => {
         const connection = peer.connect(roomPeerId(room), { reliable: false });
         addNetworkConnection(connection);
-        setMultiplayerStatus(`Verbinde mit Raum ${room}...`);
+        setMultiplayerStatus(`Raum ${room} verbunden. Warte auf Host-Start.`);
       };
       if (peer.open) connectWhenReady();
       else peer.once("open", connectWhenReady);
-      location.hash = `room=${room}`;
     }
 
     function autoJoinFromHash() {
