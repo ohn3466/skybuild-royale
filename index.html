@@ -544,6 +544,7 @@
       roomApi: null,
       sendState: null,
       sendShot: null,
+      sendHit: null,
       localId: `player-${Math.random().toString(36).slice(2, 10)}`,
       matchSeed: 123456789
     };
@@ -950,14 +951,18 @@
       const stateAction = net.roomApi.makeAction("state");
       const shotAction = net.roomApi.makeAction("shot");
       const startAction = net.roomApi.makeAction("start");
+      const hitAction = net.roomApi.makeAction("hit");
       net.sendState = stateAction[0];
       net.sendShot = shotAction[0];
+      net.sendHit = hitAction[0];
       stateAction[1]((data, peerId) => handleNetworkData({ peer: peerId }, { ...data, id: peerId }));
       shotAction[1]((data, peerId) => handleNetworkData({ peer: peerId }, { ...data, id: peerId }));
       startAction[1]((data, peerId) => handleNetworkData({ peer: peerId }, { ...data, type: "matchStart", id: peerId }));
+      hitAction[1]((data, peerId) => handleNetworkData({ peer: peerId }, { ...data, type: "hit", id: peerId }));
       net.sendStart = startAction[0];
       net.roomApi.onPeerJoin((peerId) => {
         setMultiplayerStatus(`${remotePlayers.size + 1} Spieler im Raum ${room}.`);
+        getRemotePlayer(peerId, "Gegner");
         if (net.isHost && state.running) sendMatchStart(net.matchSeed);
         sendNetworkState(true);
       });
@@ -1066,7 +1071,8 @@
         yaw: state.yaw,
         health: player.health,
         shield: player.shield,
-        weapon: player.weapon
+        weapon: player.weapon,
+        running: state.running
       };
       if (net.sendState) net.sendState(packet);
       else broadcastNetwork(packet);
@@ -1100,12 +1106,31 @@
       else broadcastNetwork(packet);
     }
 
+    function sendHit(targetId, damageAmount) {
+      const packet = {
+        type: "hit",
+        id: net.peer?.id || net.localId,
+        targetId,
+        damage: damageAmount
+      };
+      if (net.sendHit) net.sendHit(packet);
+      else broadcastNetwork(packet);
+    }
+
     function handleNetworkData(connection, data) {
       if (!data || !data.type) return;
       if (data.id && (data.id === net.peer?.id || data.id === net.localId)) return;
       if (data.type === "matchStart") {
         resetMatch(data.seed, false);
         setMultiplayerStatus(`Gemeinsame Runde gestartet: Seed ${data.seed}.`);
+        return;
+      }
+      if (data.type === "hit") {
+        if (data.targetId === net.localId || data.targetId === net.peer?.id) {
+          damage(player, data.damage || 10);
+          spark(player.pos.clone().add(new THREE.Vector3(0, 2.4, 0)), 0xffd66e, 8);
+          showMessage("Du wurdest getroffen.", 0.7);
+        }
         return;
       }
       if (data.type === "state") {
@@ -1195,7 +1220,8 @@
       state.zoneRadius = 235;
       state.zoneDamage = 0;
       state.lastShot = 0;
-      player.pos.set(0, groundHeight(0, 0), 0);
+      const spawnOffset = net.room && !net.isHost ? 8 : -8;
+      player.pos.set(spawnOffset, groundHeight(spawnOffset, 0), 0);
       player.vel.set(0, 0, 0);
       player.health = player.maxHealth;
       player.shield = player.maxShield;
@@ -1469,6 +1495,16 @@
               if (bot.health <= 0) eliminate(bot, true);
             }
           }
+          for (const remote of remotePlayers.values()) {
+            if (bullet.life <= 0) continue;
+            if (horizontalDistance(p, remote.mesh.position) < 2.5 && Math.abs(p.y - remote.mesh.position.y - 2.5) < 3.8) {
+              bullet.life = 0;
+              spark(p, 0xffd66e);
+              const targetId = [...remotePlayers.entries()].find((entry) => entry[1] === remote)?.[0];
+              if (targetId) sendHit(targetId, bullet.damage);
+              showMessage("Gegner getroffen.", 0.6);
+            }
+          }
         } else {
           if (horizontalDistance(p, player.pos) < 2.5 && Math.abs(p.y - player.pos.y - 2.0) < 3.8) {
             damage(player, bullet.damage);
@@ -1661,6 +1697,8 @@
         if (state.messageTimer <= 0) ui.message.textContent = "";
       }
       if (!state.running) {
+        sendNetworkState();
+        updateRemotePlayers();
         updateCamera();
         updateUi();
         return;
