@@ -1018,7 +1018,8 @@
       const room = new URLSearchParams(location.hash.slice(1)).get("room");
       if (room && ui.roomInput) {
         ui.roomInput.value = room.toUpperCase();
-        setMultiplayerStatus(`Raum ${room.toUpperCase()} im Link gefunden. Auf "Raum joinen" klicken.`);
+        setMultiplayerStatus(`Raum ${room.toUpperCase()} im Link gefunden. Verbinde automatisch...`);
+        if (!net.room && !net.isHost) setTimeout(joinRoom, 400);
       }
     }
 
@@ -1840,7 +1841,9 @@
     ui.hostButton.addEventListener("click", hostRoom);
     ui.joinButton.addEventListener("click", joinRoom);
     ui.copyRoomButton.addEventListener("click", async () => {
-      const room = (ui.roomInput.value.trim() || net.room || "").toUpperCase();
+      const room = (ui.roomInput.value.trim() || net.room || makeRoomCode()).toUpperCase();
+      ui.roomInput.value = room;
+      if (!net.isHost || net.room !== room) hostRoom();
       if (!room) {
         setMultiplayerStatus("Erst Raum hosten oder Code eingeben.");
         return;
