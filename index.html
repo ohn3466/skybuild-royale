@@ -523,23 +523,36 @@
       room: "",
       isHost: false,
       ready: false,
-      lastSend: 0
+      lastSend: 0,
+      TrysteroJoin: null,
+      roomApi: null,
+      sendState: null,
+      sendShot: null,
+      localId: `player-${Math.random().toString(36).slice(2, 10)}`
     };
 
     function bootPeerModule() {
-      if (window.Peer) {
-        net.Peer = window.Peer;
-        setMultiplayerStatus("Online bereit: Raum hosten oder Code eingeben.");
-        autoJoinFromHash();
-        return;
-      }
-      import("https://esm.sh/peerjs@1.5.4?bundle")
+      import("https://esm.sh/trystero@0.21.0/torrent?bundle")
         .then((module) => {
-          net.Peer = module.default || module.Peer || module;
+          net.TrysteroJoin = module.joinRoom;
           setMultiplayerStatus("Online bereit: Raum hosten oder Code eingeben.");
           autoJoinFromHash();
         })
-        .catch(() => setMultiplayerStatus("Online-Modul konnte nicht geladen werden. Singleplayer läuft weiter."));
+        .catch(() => {
+          if (window.Peer) {
+            net.Peer = window.Peer;
+            setMultiplayerStatus("Online bereit: Raum hosten oder Code eingeben.");
+            autoJoinFromHash();
+            return;
+          }
+          import("https://esm.sh/peerjs@1.5.4?bundle")
+            .then((module) => {
+              net.Peer = module.default || module.Peer || module;
+              setMultiplayerStatus("Online bereit: Raum hosten oder Code eingeben.");
+              autoJoinFromHash();
+            })
+            .catch(() => setMultiplayerStatus("Online-Modul konnte nicht geladen werden. Singleplayer läuft weiter."));
+        });
     }
 
     bootPeerModule();
@@ -904,14 +917,43 @@
       return net.peer;
     }
 
+    function connectSharedRoom(room) {
+      if (!net.TrysteroJoin) return false;
+      if (net.roomApi && net.room === room) {
+        setMultiplayerStatus(`Schon im Raum ${room}.`);
+        return true;
+      }
+      if (net.roomApi?.leave) net.roomApi.leave();
+      remotePlayers.forEach((remote) => scene.remove(remote.mesh));
+      remotePlayers.clear();
+      netConnections.clear();
+      net.room = room;
+      net.ready = true;
+      net.roomApi = net.TrysteroJoin({ appId: "skybuild-royale-ohn3466" }, room.toLowerCase());
+      const stateAction = net.roomApi.makeAction("state");
+      const shotAction = net.roomApi.makeAction("shot");
+      net.sendState = stateAction[0];
+      net.sendShot = shotAction[0];
+      stateAction[1]((data, peerId) => handleNetworkData({ peer: peerId }, { ...data, id: peerId }));
+      shotAction[1]((data, peerId) => handleNetworkData({ peer: peerId }, { ...data, id: peerId }));
+      net.roomApi.onPeerJoin((peerId) => {
+        setMultiplayerStatus(`${remotePlayers.size + 1} Spieler im Raum ${room}.`);
+        sendNetworkState(true);
+      });
+      net.roomApi.onPeerLeave((peerId) => removeRemotePlayer(peerId));
+      setMultiplayerStatus(`Raum ${room} verbunden. Match starten und Link teilen.`);
+      return true;
+    }
+
     function hostRoom() {
       const room = (ui.roomInput.value.trim() || makeRoomCode()).toUpperCase();
       ui.roomInput.value = room;
       net.room = room;
       net.isHost = true;
       net.ready = false;
-      ensurePeer(roomPeerId(room));
       location.hash = `room=${room}`;
+      if (connectSharedRoom(room)) return;
+      ensurePeer(roomPeerId(room));
       setMultiplayerStatus(`Raum ${room} wird geöffnet...`);
     }
 
@@ -924,6 +966,10 @@
       ui.roomInput.value = room;
       net.room = room;
       net.isHost = false;
+      if (connectSharedRoom(room)) {
+        location.hash = `room=${room}`;
+        return;
+      }
       const peer = ensurePeer();
       if (!peer) return;
       const connectWhenReady = () => {
@@ -986,13 +1032,13 @@
     }
 
     function sendNetworkState(force = false) {
-      if (!net.peer || !net.peer.open || netConnections.size === 0) return;
+      if ((!net.peer || !net.peer.open || netConnections.size === 0) && !net.sendState) return;
       const now = clock.elapsedTime;
       if (!force && now - net.lastSend < 0.08) return;
       net.lastSend = now;
-      broadcastNetwork({
+      const packet = {
         type: "state",
-        id: net.peer.id,
+        id: net.peer?.id || net.localId,
         x: player.pos.x,
         y: player.pos.y,
         z: player.pos.z,
@@ -1000,14 +1046,16 @@
         health: player.health,
         shield: player.shield,
         weapon: player.weapon
-      });
+      };
+      if (net.sendState) net.sendState(packet);
+      else broadcastNetwork(packet);
     }
 
     function sendNetworkShot(origin, dir, weaponIndex) {
-      if (!net.peer || !net.peer.open || netConnections.size === 0) return;
-      broadcastNetwork({
+      if ((!net.peer || !net.peer.open || netConnections.size === 0) && !net.sendShot) return;
+      const packet = {
         type: "shot",
-        id: net.peer.id,
+        id: net.peer?.id || "local",
         x: origin.x,
         y: origin.y,
         z: origin.z,
@@ -1015,12 +1063,14 @@
         dy: dir.y,
         dz: dir.z,
         weapon: weaponIndex
-      });
+      };
+      if (net.sendShot) net.sendShot(packet);
+      else broadcastNetwork(packet);
     }
 
     function handleNetworkData(connection, data) {
       if (!data || !data.type) return;
-      if (data.id && data.id === net.peer?.id) return;
+      if (data.id && (data.id === net.peer?.id || data.id === net.localId)) return;
       if (data.type === "state") {
         const remote = getRemotePlayer(data.id || connection.peer);
         remote.mesh.position.set(data.x, data.y, data.z);
