@@ -546,7 +546,8 @@
       sendShot: null,
       sendHit: null,
       localId: `player-${Math.random().toString(36).slice(2, 10)}`,
-      matchSeed: 123456789
+      matchSeed: 123456789,
+      startBroadcastUntil: 0
     };
 
     function bootPeerModule() {
@@ -1072,7 +1073,8 @@
         health: player.health,
         shield: player.shield,
         weapon: player.weapon,
-        running: state.running
+        running: state.running,
+        matchSeed: net.matchSeed
       };
       if (net.sendState) net.sendState(packet);
       else broadcastNetwork(packet);
@@ -1134,6 +1136,10 @@
         return;
       }
       if (data.type === "state") {
+        if (!state.running && data.running && data.matchSeed) {
+          resetMatch(data.matchSeed, false);
+          setMultiplayerStatus(`Gemeinsame Runde gestartet: Seed ${data.matchSeed}.`);
+        }
         const remote = getRemotePlayer(data.id || connection.peer);
         remote.mesh.position.set(data.x, data.y, data.z);
         remote.mesh.rotation.y = -data.yaw;
@@ -1723,6 +1729,9 @@
     function render() {
       const dt = Math.min(0.033, clock.getDelta());
       update(dt);
+      if (net.isHost && state.running && net.startBroadcastUntil > clock.elapsedTime) {
+        sendMatchStart(net.matchSeed);
+      }
       renderer.render(scene, camera);
       requestAnimationFrame(render);
     }
@@ -1812,6 +1821,10 @@
         return;
       }
       resetMatch(makeMatchSeed(), Boolean(net.room && net.isHost));
+      if (net.room && net.isHost) {
+        net.startBroadcastUntil = clock.elapsedTime + 4;
+        sendNetworkState(true);
+      }
       mouse.active = true;
       mouse.lastX = innerWidth / 2;
       mouse.lastY = innerHeight / 2;
