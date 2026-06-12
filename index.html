@@ -421,6 +421,7 @@
     </section>
   </div>
 
+  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
   <script type="module">
     import * as THREE from "https://unpkg.com/three@0.164.1/build/three.module.js";
 
@@ -525,13 +526,23 @@
       lastSend: 0
     };
 
-    import("https://esm.sh/peerjs@1.5.4?bundle")
-      .then((module) => {
-        net.Peer = module.default || module.Peer || module;
+    function bootPeerModule() {
+      if (window.Peer) {
+        net.Peer = window.Peer;
         setMultiplayerStatus("Online bereit: Raum hosten oder Code eingeben.");
         autoJoinFromHash();
-      })
-      .catch(() => setMultiplayerStatus("Online-Modul konnte nicht geladen werden. Singleplayer läuft weiter."));
+        return;
+      }
+      import("https://esm.sh/peerjs@1.5.4?bundle")
+        .then((module) => {
+          net.Peer = module.default || module.Peer || module;
+          setMultiplayerStatus("Online bereit: Raum hosten oder Code eingeben.");
+          autoJoinFromHash();
+        })
+        .catch(() => setMultiplayerStatus("Online-Modul konnte nicht geladen werden. Singleplayer läuft weiter."));
+    }
+
+    bootPeerModule();
 
     function makeTexture(base, fleck, size = 256, density = 850) {
       const canvas = document.createElement("canvas");
@@ -877,6 +888,11 @@
         setMultiplayerStatus("Online-Modul lädt noch. Gleich nochmal klicken.");
         return null;
       }
+      if (id && net.peer && !net.peer.destroyed && net.peer.id !== id) {
+        net.peer.destroy();
+        net.peer = null;
+        netConnections.clear();
+      }
       if (net.peer && !net.peer.destroyed) return net.peer;
       net.peer = id ? new net.Peer(id) : new net.Peer();
       net.peer.on("open", () => {
@@ -897,7 +913,6 @@
       ensurePeer(roomPeerId(room));
       location.hash = `room=${room}`;
       setMultiplayerStatus(`Raum ${room} wird geöffnet...`);
-      if (!state.running) resetMatch();
     }
 
     function joinRoom() {
@@ -915,7 +930,6 @@
         const connection = peer.connect(roomPeerId(room), { reliable: false });
         addNetworkConnection(connection);
         setMultiplayerStatus(`Verbinde mit Raum ${room}...`);
-        if (!state.running) resetMatch();
       };
       if (peer.open) connectWhenReady();
       else peer.once("open", connectWhenReady);
