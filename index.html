@@ -547,10 +547,14 @@
       sendHit: null,
       localId: `player-${Math.random().toString(36).slice(2, 10)}`,
       matchSeed: 123456789,
-      startBroadcastUntil: 0
+      startBroadcastUntil: 0,
+      autoJoined: false
     };
 
     function bootPeerModule() {
+      if (window.Peer) {
+        net.Peer = window.Peer;
+      }
       import("https://esm.sh/trystero@0.21.0/torrent?bundle")
         .then((module) => {
           net.TrysteroJoin = module.joinRoom;
@@ -979,7 +983,7 @@
       net.isHost = true;
       net.ready = false;
       location.hash = `room=${room}`;
-      if (connectSharedRoom(room)) return;
+      connectSharedRoom(room);
       ensurePeer(roomPeerId(room));
       setMultiplayerStatus(`Raum ${room} wird geöffnet...`);
     }
@@ -993,10 +997,7 @@
       ui.roomInput.value = room;
       net.room = room;
       net.isHost = false;
-      if (connectSharedRoom(room)) {
-        location.hash = `room=${room}`;
-        return;
-      }
+      connectSharedRoom(room);
       const peer = ensurePeer();
       if (!peer) return;
       const connectWhenReady = () => {
@@ -1021,7 +1022,9 @@
       if (!connection || netConnections.has(connection.peer)) return;
       netConnections.set(connection.peer, connection);
       connection.on("open", () => {
-        setMultiplayerStatus(`${netConnections.size} Verbindung(en) im Raum ${net.room}.`);
+        getRemotePlayer(connection.peer, "Gegner");
+        setMultiplayerStatus(`${Math.max(remotePlayers.size, netConnections.size + 1)} Spieler im Raum ${net.room}.`);
+        if (net.isHost && state.running) sendMatchStart(net.matchSeed);
         sendNetworkState(true);
       });
       connection.on("data", (data) => handleNetworkData(connection, data));
@@ -1077,7 +1080,7 @@
         matchSeed: net.matchSeed
       };
       if (net.sendState) net.sendState(packet);
-      else broadcastNetwork(packet);
+      broadcastNetwork(packet);
     }
 
     function sendNetworkShot(origin, dir, weaponIndex) {
@@ -1094,18 +1097,17 @@
         weapon: weaponIndex
       };
       if (net.sendShot) net.sendShot(packet);
-      else broadcastNetwork(packet);
+      broadcastNetwork(packet);
     }
 
     function sendMatchStart(seed) {
-      if (!net.sendStart && (!net.peer || !net.peer.open || netConnections.size === 0)) return;
       const packet = {
         type: "matchStart",
         seed,
         id: net.peer?.id || net.localId
       };
       if (net.sendStart) net.sendStart(packet);
-      else broadcastNetwork(packet);
+      broadcastNetwork(packet);
     }
 
     function sendHit(targetId, damageAmount) {
@@ -1116,7 +1118,7 @@
         damage: damageAmount
       };
       if (net.sendHit) net.sendHit(packet);
-      else broadcastNetwork(packet);
+      broadcastNetwork(packet);
     }
 
     function handleNetworkData(connection, data) {
