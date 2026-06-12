@@ -223,6 +223,38 @@
       height: 20px;
     }
 
+    body.scoped .crosshair {
+      width: 210px;
+      height: 210px;
+      border: 3px solid rgba(255, 255, 255, 0.92);
+      border-radius: 50%;
+      background:
+        radial-gradient(circle, transparent 0 5px, rgba(72, 202, 255, 0.55) 6px 7px, transparent 8px),
+        linear-gradient(90deg, transparent 0 47%, rgba(255, 255, 255, 0.88) 47% 53%, transparent 53%),
+        linear-gradient(0deg, transparent 0 47%, rgba(255, 255, 255, 0.88) 47% 53%, transparent 53%);
+      box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.34), inset 0 0 28px rgba(72, 202, 255, 0.32);
+    }
+
+    body.scoped .crosshair::before,
+    body.scoped .crosshair::after {
+      background: rgba(255, 255, 255, 0.9);
+      box-shadow: 0 0 12px rgba(72, 202, 255, 0.9);
+    }
+
+    body.scoped .crosshair::before {
+      top: 103px;
+      left: 18px;
+      width: 174px;
+      height: 2px;
+    }
+
+    body.scoped .crosshair::after {
+      top: 18px;
+      left: 103px;
+      width: 2px;
+      height: 174px;
+    }
+
     .message {
       position: absolute;
       top: 104px;
@@ -402,7 +434,7 @@
     <section class="weapons panel">
       <div class="slot active"><b>⌁</b><span>Pulse</span></div>
       <div class="slot"><b>◆</b><span>Burst</span></div>
-      <div class="slot"><b>✦</b><span>Rail</span></div>
+      <div class="slot"><b>✦</b><span>Sniper</span></div>
     </section>
 
     <section class="start panel" id="startCard">
@@ -491,7 +523,7 @@
     const weapons = [
       { name: "Pulse", fireRate: 0.16, damage: 18, spread: 0.012, speed: 185, color: 0x48caff, pellets: 1 },
       { name: "Burst", fireRate: 0.52, damage: 10, spread: 0.07, speed: 160, color: 0xffd66e, pellets: 5 },
-      { name: "Rail", fireRate: 0.85, damage: 52, spread: 0.004, speed: 260, color: 0xd398ff, pellets: 1 }
+      { name: "Sniper", fireRate: 1.15, damage: 95, spread: 0.0015, speed: 340, color: 0xd398ff, pellets: 1 }
     ];
 
     const state = {
@@ -503,6 +535,7 @@
       pitch: -0.18,
       messageTimer: 0,
       lastShot: 0,
+      scoped: false,
       kills: 0,
       zoneRadius: 235,
       zoneTarget: 48,
@@ -1281,6 +1314,7 @@
       state.zoneRadius = 235;
       state.zoneDamage = 0;
       state.lastShot = 0;
+      state.scoped = false;
       const spawnOffset = net.room && !net.isHost ? 8 : -8;
       player.pos.set(spawnOffset, groundHeight(spawnOffset, 0), 0);
       player.vel.set(0, 0, 0);
@@ -1390,14 +1424,21 @@
     function updateCamera() {
       const target = player.pos.clone();
       target.y += 3.0;
-      const cameraDistance = 11;
-      const cameraHeight = 4.5;
+      const canScope = state.scoped && player.weapon === 2 && state.running;
+      const cameraDistance = canScope ? 5.2 : 11;
+      const cameraHeight = canScope ? 3.2 : 4.5;
       const pitchLift = Math.sin(state.pitch) * 7;
       const forward = forwardVector();
       const offset = forward.clone().multiplyScalar(-cameraDistance);
       offset.y = cameraHeight - pitchLift;
       camera.position.copy(target).add(offset);
       camera.lookAt(target.x + forward.x * 16, target.y + state.pitch * 14, target.z + forward.z * 16);
+      const targetFov = canScope ? 28 : 67;
+      if (Math.abs(camera.fov - targetFov) > 0.1) {
+        camera.fov += (targetFov - camera.fov) * 0.24;
+        camera.updateProjectionMatrix();
+      }
+      document.body.classList.toggle("scoped", canScope);
     }
 
     function aimDirection() {
@@ -1410,7 +1451,9 @@
       if (owner === "player" && now - state.lastShot < weapon.fireRate) return;
       if (owner === "player") state.lastShot = now;
       for (let i = 0; i < weapon.pellets; i++) {
-        const spread = new THREE.Vector3(rng(-weapon.spread, weapon.spread), rng(-weapon.spread, weapon.spread), rng(-weapon.spread, weapon.spread));
+        const scopeBonus = owner === "player" && weaponIndex === 2 && state.scoped ? 0.22 : 1;
+        const spreadAmount = weapon.spread * scopeBonus;
+        const spread = new THREE.Vector3(rng(-spreadAmount, spreadAmount), rng(-spreadAmount, spreadAmount), rng(-spreadAmount, spreadAmount));
         const shotDir = dir.clone().add(spread).normalize();
         const mesh = new THREE.Mesh(
           new THREE.SphereGeometry(0.34, 8, 8),
@@ -1742,6 +1785,7 @@
 
     function endMatch(won) {
       state.running = false;
+      state.scoped = false;
       state.gameOver = true;
       ui.start.classList.remove("hidden");
       ui.start.querySelector("h2").textContent = won ? "Victory Island" : "Eliminiert";
@@ -1825,6 +1869,7 @@
       if (key === "r") resetMatch();
       if (["1", "2", "3"].includes(key)) {
         player.weapon = Number(key) - 1;
+        if (player.weapon !== 2) state.scoped = false;
         showMessage(`${weapons[player.weapon].name} ausgerüstet.`, 0.7);
       }
     });
@@ -1844,11 +1889,15 @@
       mouse.lastY = event.clientY;
       renderer.domElement.focus();
       renderer.domElement.setPointerCapture?.(event.pointerId);
+      if (event.button === 2 && state.running && player.weapon === 2) {
+        state.scoped = true;
+      }
       if (event.button === 0 && state.running && !state.pointerLocked) {
         requestLock();
       }
     });
     renderer.domElement.addEventListener("pointerup", (event) => {
+      if (event.button === 2) state.scoped = false;
       renderer.domElement.releasePointerCapture?.(event.pointerId);
     });
     addEventListener("contextmenu", (event) => event.preventDefault());
@@ -1857,6 +1906,10 @@
       updateUi();
     });
     renderer.domElement.addEventListener("mousedown", (event) => {
+      if (event.button === 2) {
+        if (state.running && player.weapon === 2) state.scoped = true;
+        return;
+      }
       if (event.button !== 0) return;
       state.mouseLook = true;
       if (!state.running) {
