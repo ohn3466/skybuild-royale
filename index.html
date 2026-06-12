@@ -468,9 +468,25 @@
     const temp = new THREE.Vector3();
     const mapSize = 520;
     const halfMap = mapSize / 2;
-    const rng = (min, max) => min + Math.random() * (max - min);
+    let randomSource = Math.random;
+    const rng = (min, max) => min + randomSource() * (max - min);
     const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
     const horizontalDistance = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);
+
+    function seededRandom(seed) {
+      let value = seed >>> 0;
+      return () => {
+        value += 0x6d2b79f5;
+        let t = value;
+        t = Math.imul(t ^ (t >>> 15), t | 1);
+        t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+      };
+    }
+
+    function makeMatchSeed() {
+      return Math.floor(Math.random() * 0xffffffff);
+    }
 
     const weapons = [
       { name: "Pulse", fireRate: 0.16, damage: 18, spread: 0.012, speed: 185, color: 0x48caff, pellets: 1 },
@@ -528,7 +544,8 @@
       roomApi: null,
       sendState: null,
       sendShot: null,
-      localId: `player-${Math.random().toString(36).slice(2, 10)}`
+      localId: `player-${Math.random().toString(36).slice(2, 10)}`,
+      matchSeed: 123456789
     };
 
     function bootPeerModule() {
@@ -932,12 +949,16 @@
       net.roomApi = net.TrysteroJoin({ appId: "skybuild-royale-ohn3466" }, room.toLowerCase());
       const stateAction = net.roomApi.makeAction("state");
       const shotAction = net.roomApi.makeAction("shot");
+      const startAction = net.roomApi.makeAction("start");
       net.sendState = stateAction[0];
       net.sendShot = shotAction[0];
       stateAction[1]((data, peerId) => handleNetworkData({ peer: peerId }, { ...data, id: peerId }));
       shotAction[1]((data, peerId) => handleNetworkData({ peer: peerId }, { ...data, id: peerId }));
+      startAction[1]((data, peerId) => handleNetworkData({ peer: peerId }, { ...data, type: "matchStart", id: peerId }));
+      net.sendStart = startAction[0];
       net.roomApi.onPeerJoin((peerId) => {
         setMultiplayerStatus(`${remotePlayers.size + 1} Spieler im Raum ${room}.`);
+        if (net.isHost && state.running) sendMatchStart(net.matchSeed);
         sendNetworkState(true);
       });
       net.roomApi.onPeerLeave((peerId) => removeRemotePlayer(peerId));
@@ -1068,9 +1089,25 @@
       else broadcastNetwork(packet);
     }
 
+    function sendMatchStart(seed) {
+      if (!net.sendStart && (!net.peer || !net.peer.open || netConnections.size === 0)) return;
+      const packet = {
+        type: "matchStart",
+        seed,
+        id: net.peer?.id || net.localId
+      };
+      if (net.sendStart) net.sendStart(packet);
+      else broadcastNetwork(packet);
+    }
+
     function handleNetworkData(connection, data) {
       if (!data || !data.type) return;
       if (data.id && (data.id === net.peer?.id || data.id === net.localId)) return;
+      if (data.type === "matchStart") {
+        resetMatch(data.seed, false);
+        setMultiplayerStatus(`Gemeinsame Runde gestartet: Seed ${data.seed}.`);
+        return;
+      }
       if (data.type === "state") {
         const remote = getRemotePlayer(data.id || connection.peer);
         remote.mesh.position.set(data.x, data.y, data.z);
@@ -1096,7 +1133,7 @@
     }
 
     function spawnLoot(x = rng(-210, 210), z = rng(-210, 210), type = null) {
-      const roll = Math.random();
+      const roll = rng(0, 1);
       const chosen = type || (roll < 0.32 ? "wood" : roll < 0.55 ? "shield" : roll < 0.76 ? "health" : "weapon");
       let mesh;
       const y = groundHeight(x, z);
@@ -1148,7 +1185,10 @@
       });
     }
 
-    function resetMatch() {
+    function resetMatch(seed = null, announce = false) {
+      if (seed == null) seed = makeMatchSeed();
+      net.matchSeed = seed;
+      randomSource = seededRandom(seed);
       state.running = true;
       state.gameOver = false;
       state.kills = 0;
@@ -1175,9 +1215,11 @@
       }
       for (let i = 0; i < 20; i++) spawnBot(i);
       for (let i = 0; i < 42; i++) spawnLoot();
+      randomSource = Math.random;
       showMessage("Drop gestartet. Zone, Gegner und Material im Blick behalten.", 2.4);
       ui.start.classList.add("hidden");
       updateUi();
+      if (announce) sendMatchStart(seed);
     }
 
     function showMessage(text, seconds = 1.5) {
@@ -1654,7 +1696,9 @@
     }
 
     setupLights();
+    randomSource = seededRandom(42424242);
     createMap();
+    randomSource = Math.random;
     resetMatch();
     state.running = false;
     ui.start.classList.remove("hidden");
@@ -1725,7 +1769,11 @@
       if (state.running && !state.pointerLocked) requestLock();
     });
     ui.startButton.addEventListener("click", () => {
-      resetMatch();
+      if (net.room && !net.isHost) {
+        setMultiplayerStatus("Du bist im Raum. Warte, bis der Host die Runde startet.");
+        return;
+      }
+      resetMatch(makeMatchSeed(), Boolean(net.room && net.isHost));
       mouse.active = true;
       mouse.lastX = innerWidth / 2;
       mouse.lastY = innerHeight / 2;
