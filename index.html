@@ -548,7 +548,11 @@
       localId: `player-${Math.random().toString(36).slice(2, 10)}`,
       matchSeed: 123456789,
       startBroadcastUntil: 0,
-      autoJoined: false
+      autoJoined: false,
+      relayTopic: "",
+      relaySocket: null,
+      relayReady: false,
+      lastRelaySend: 0
     };
 
     function bootPeerModule() {
@@ -976,6 +980,44 @@
       return true;
     }
 
+    function connectRelay(room) {
+      const topic = `skybuild-royale-${room.toLowerCase()}`;
+      if (net.relayTopic === topic && net.relaySocket) return;
+      if (net.relaySocket) net.relaySocket.close();
+      net.relayTopic = topic;
+      net.relayReady = false;
+      net.relaySocket = new WebSocket(`wss://ntfy.sh/${topic}/ws`);
+      net.relaySocket.addEventListener("open", () => {
+        net.relayReady = true;
+        if (net.isHost && state.running) sendMatchStart(net.matchSeed);
+        sendNetworkState(true);
+      });
+      net.relaySocket.addEventListener("message", (event) => {
+        try {
+          const envelope = JSON.parse(event.data);
+          if (!envelope.message) return;
+          const packet = JSON.parse(envelope.message);
+          handleNetworkData({ peer: `relay-${packet.id || "player"}` }, packet);
+        } catch {
+          // Ignore non-game messages on the public room topic.
+        }
+      });
+      net.relaySocket.addEventListener("close", () => {
+        net.relayReady = false;
+      });
+    }
+
+    function sendRelay(packet, force = false) {
+      if (!net.relayTopic) return;
+      const now = clock.elapsedTime;
+      if (packet.type === "state" && !force && now - net.lastRelaySend < 0.25) return;
+      if (packet.type === "state") net.lastRelaySend = now;
+      fetch(`https://ntfy.sh/${net.relayTopic}`, {
+        method: "POST",
+        body: JSON.stringify(packet)
+      }).catch(() => {});
+    }
+
     function hostRoom() {
       const room = (ui.roomInput.value.trim() || makeRoomCode()).toUpperCase();
       ui.roomInput.value = room;
@@ -983,6 +1025,7 @@
       net.isHost = true;
       net.ready = false;
       location.hash = `room=${room}`;
+      connectRelay(room);
       connectSharedRoom(room);
       if (net.Peer) ensurePeer(roomPeerId(room));
       setMultiplayerStatus(`Raum ${room} wird geöffnet...`);
@@ -997,6 +1040,7 @@
       ui.roomInput.value = room;
       net.room = room;
       net.isHost = false;
+      connectRelay(room);
       connectSharedRoom(room);
       location.hash = `room=${room}`;
       if (!net.Peer) {
@@ -1067,7 +1111,7 @@
     }
 
     function sendNetworkState(force = false) {
-      if ((!net.peer || !net.peer.open || netConnections.size === 0) && !net.sendState) return;
+      if ((!net.peer || !net.peer.open || netConnections.size === 0) && !net.sendState && !net.relayTopic) return;
       const now = clock.elapsedTime;
       if (!force && now - net.lastSend < 0.08) return;
       net.lastSend = now;
@@ -1086,10 +1130,11 @@
       };
       if (net.sendState) net.sendState(packet);
       broadcastNetwork(packet);
+      sendRelay(packet, force);
     }
 
     function sendNetworkShot(origin, dir, weaponIndex) {
-      if ((!net.peer || !net.peer.open || netConnections.size === 0) && !net.sendShot) return;
+      if ((!net.peer || !net.peer.open || netConnections.size === 0) && !net.sendShot && !net.relayTopic) return;
       const packet = {
         type: "shot",
         id: net.peer?.id || "local",
@@ -1103,6 +1148,7 @@
       };
       if (net.sendShot) net.sendShot(packet);
       broadcastNetwork(packet);
+      sendRelay(packet, true);
     }
 
     function sendMatchStart(seed) {
@@ -1113,6 +1159,7 @@
       };
       if (net.sendStart) net.sendStart(packet);
       broadcastNetwork(packet);
+      sendRelay(packet, true);
     }
 
     function sendHit(targetId, damageAmount) {
@@ -1124,6 +1171,7 @@
       };
       if (net.sendHit) net.sendHit(packet);
       broadcastNetwork(packet);
+      sendRelay(packet, true);
     }
 
     function handleNetworkData(connection, data) {
